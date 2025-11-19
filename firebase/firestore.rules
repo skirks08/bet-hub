@@ -1,0 +1,82 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // helper functions
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return request.auth != null && request.auth.token.admin == true;
+    }
+
+    // Top-level leagues collection
+    match /leagues/{leagueId} {
+      // Any authenticated user can read league metadata. This is conservative —
+      // tighten if you want leagues to be private to members only.
+      allow read: if isSignedIn() || isAdmin();
+
+      // Create a league only if the authenticated user is the commissionerId in the written data
+      allow create: if isSignedIn() && request.resource.data.commissionerId == request.auth.uid;
+
+      // Only commissioner or admin can update or delete league metadata
+      allow update, delete: if isSignedIn() && (resource.data.commissionerId == request.auth.uid || isAdmin());
+
+      // Teams subcollection: owners can create/update their team, commissioner/admin can manage all
+      match /teams/{teamId} {
+        allow read: if isSignedIn() || isAdmin();
+
+        allow create: if isSignedIn() && (
+          // owner is creating their own team
+          (request.resource.data.ownerId == request.auth.uid)
+          // or commissioner/admin creating teams
+          || (get(/databases/$(database)/documents/leagues/$(leagueId)).data.commissionerId == request.auth.uid)
+          || isAdmin()
+        );
+
+        allow update, delete: if isSignedIn() && (
+          // owner can update/delete their own team
+          (resource.data.ownerId == request.auth.uid)
+          // or commissioner/admin can manage teams
+          || (get(/databases/$(database)/documents/leagues/$(leagueId)).data.commissionerId == request.auth.uid)
+          || isAdmin()
+        );
+      }
+
+      // Bets subcollection: authenticated users may create bets; commissioner/admin may edit/delete
+      match /bets/{betId} {
+        allow read: if isSignedIn() || isAdmin();
+
+        // Allow any authenticated user to create a bet. For stricter checks, require
+        // `createdBy == request.auth.uid` or validate participants membership.
+        allow create: if isSignedIn();
+
+        // Only commissioner or admin can modify or remove bets once created.
+        allow update, delete: if isSignedIn() && (
+          get(/databases/$(database)/documents/leagues/$(leagueId)).data.commissionerId == request.auth.uid
+          || isAdmin()
+        );
+      }
+
+      // Payouts subcollection: only commissioner or admin can create or modify payouts
+      match /payouts/{payoutId} {
+        allow read: if isSignedIn() || isAdmin();
+        allow create, update, delete: if isSignedIn() && (
+          get(/databases/$(database)/documents/leagues/$(leagueId)).data.commissionerId == request.auth.uid
+          || isAdmin()
+        );
+      }
+    }
+
+    // Users: users can read/write their own profile documents
+    match /users/{userId} {
+      allow read, create, update, delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    // Default: deny all other accesses
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}
